@@ -253,6 +253,9 @@ XKOS:
 XTAI:
   name: Taiwan
   country: TW
+ROCO:
+  name: Taipei Exchange
+  country: TW
 XSES:
   name: Singapore
   country: SG

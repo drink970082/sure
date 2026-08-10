@@ -571,7 +571,9 @@ class Provider::YahooFinance < Provider
       "XNSE" => { yahoo_suffix: ".NS", default_currency: "INR", dual_list_group: :india, preference_rank: 0 },
       "XBOM" => { yahoo_suffix: ".BO", default_currency: "INR", dual_list_group: :india, preference_rank: 1 },
       "XBOG" => { yahoo_suffix: ".CL", default_currency: "COP" },
-      "XIDX" => { yahoo_suffix: ".JK", default_currency: "IDR" }
+      "XIDX" => { yahoo_suffix: ".JK", default_currency: "IDR" },
+      "XTAI" => { yahoo_suffix: ".TW", default_currency: "TWD" },
+      "ROCO" => { yahoo_suffix: ".TWO", default_currency: "TWD" }
     }.freeze
 
     # Yahoo Finance sometimes returns currencies in minor units (pence, cents)
@@ -1113,6 +1115,10 @@ class Provider::YahooFinance < Provider
         "XBOG" # Colombian Securities Exchange
       when "JKT"
         "XIDX" # Indonesia Stock Exchange (IDX)
+      when "TAI"
+        "XTAI" # Taiwan Stock Exchange
+      when "TWO"
+        "ROCO" # Taipei Exchange
       else
         exchange_code.upcase
       end
