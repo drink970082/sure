@@ -24,6 +24,10 @@ class Provider::YahooFinance < Provider
     rate_limited: 30.minutes,
     unavailable: 5.minutes
   }.freeze
+  # How long to skip the cookie/crumb handshake after Yahoo rate limits it and
+  # serve prices from the unauthenticated chart endpoint instead.
+  CRUMB_BLOCK_DURATION = 30.minutes
+
   HEALTH_STATUS_RETENTION = 1.hour
   HEALTH_LOCK_DURATION = 15.seconds
   HEALTH_STATUS_CACHE_KEY = "yahoo_finance_health_status"
@@ -406,6 +410,13 @@ class Provider::YahooFinance < Provider
     rescue Faraday::Error, JSON::ParserError => e
       health_result(:unavailable, stage:, exception_class: e.class.name, http_status: faraday_status(e))
     rescue RateLimitError => e
+      # NOTE: deliberately NOT downgraded to :healthy when an unauthenticated
+      # chart probe happens to succeed. Measured against live Yahoo, both the
+      # authenticated and the public chart endpoint return 429 intermittently,
+      # so a single passing probe is not evidence the provider is usable - and
+      # acting on it would restart exactly the request flood that walks
+      # securities to offline. fetch_authenticated_chart still falls back
+      # opportunistically; the health assessment stays honest.
       health_result(:rate_limited, stage: :crumb, exception_class: e.class.name, http_status: e.details&.dig(:status))
     rescue AuthenticationError => e
       health_result(:unavailable, stage:, exception_class: e.class.name, http_status: e.details&.dig(:status))
@@ -743,7 +754,13 @@ class Provider::YahooFinance < Provider
     # Makes a single authenticated GET to /v8/finance/chart/:symbol.
     # If Yahoo returns a stale-crumb error (200 OK with Unauthorized body),
     # clears the crumb cache and retries once with fresh credentials.
+    # The chart endpoint serves prices without authentication; only quoteSummary
+    # genuinely needs a crumb. Yahoo rate limits the cookie/crumb handshake far
+    # more aggressively than chart itself, so when the handshake is blocked we
+    # fetch prices unauthenticated instead of failing the whole sync.
     def fetch_authenticated_chart(symbol, params)
+      return unauthenticated_chart(symbol, params) if crumb_blocked?
+
       cookie, crumb = fetch_cookie_and_crumb
       response = authenticated_client(cookie).get("#{base_url}/v8/finance/chart/#{symbol}") do |req|
         params.each { |k, v| req.params[k] = v }
@@ -765,6 +782,35 @@ class Provider::YahooFinance < Provider
       end
 
       data
+    rescue RateLimitError, AuthenticationError => e
+      # Stop asking for a crumb for a while: retrying the handshake on every
+      # security is what keeps Yahoo's block alive in the first place.
+      mark_crumb_blocked!
+      Rails.logger.info("Yahoo Finance crumb unavailable (#{e.class.name}); falling back to unauthenticated chart for #{symbol}")
+      unauthenticated_chart(symbol, params)
+    end
+
+    def unauthenticated_chart(symbol, params)
+      response = client.get("#{base_url}/v8/finance/chart/#{symbol}") do |req|
+        params.each { |k, v| req.params[k] = v }
+      end
+
+      JSON.parse(response.body)
+    end
+
+    # ponytail: a cache key is the whole circuit breaker. TTL matches
+    # HEALTH_STATUS_FRESHNESS[:rate_limited] so the crumb is retried on roughly
+    # the same cadence as the health assessment.
+    def crumb_blocked?
+      Rails.cache.read(crumb_block_cache_key).present?
+    end
+
+    def mark_crumb_blocked!
+      Rails.cache.write(crumb_block_cache_key, true, expires_in: CRUMB_BLOCK_DURATION)
+    end
+
+    def crumb_block_cache_key
+      "#{@cache_prefix}_crumb_blocked"
     end
 
     def fetch_chart_data(symbol, start_date, end_date, &block)

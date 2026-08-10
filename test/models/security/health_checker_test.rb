@@ -135,6 +135,22 @@ class Security::HealthCheckerTest < ActiveSupport::TestCase
     assert_equal 2, @due_for_check_security.failed_fetch_count
   end
 
+  test "a rate limited provider does not count as a failure for the security" do
+    yahoo = Provider::YahooFinance.new
+    yahoo.stubs(:health_status).returns(:rate_limited)
+    yahoo.expects(:fetch_security_price).never
+    Security.any_instance.stubs(:price_data_provider).returns(yahoo)
+
+    checked_at = @due_for_check_security.last_health_check_at
+
+    Security::HealthChecker.new(@due_for_check_security).run_check
+
+    assert_equal 0, @due_for_check_security.reload.failed_fetch_count
+    refute @due_for_check_security.offline?
+    # Left due on purpose, so it gets a real check once the provider recovers
+    assert_equal checked_at, @due_for_check_security.last_health_check_at
+  end
+
   test "failure incrementor resets to 0 when health check succeeds" do
     hc = Security::HealthChecker.new(@offline_never_checked_with_prices)
 

@@ -177,6 +177,30 @@ class Security::ProvidedTest < ActiveSupport::TestCase
     assert_equal "twelve_data", entry.provider_key
   end
 
+  # --- provider_down? ---
+
+  test "price fetches are skipped while the provider is rate limited" do
+    yahoo = Provider::YahooFinance.new
+    yahoo.stubs(:health_status).returns(:rate_limited)
+    yahoo.expects(:fetch_security_price).never
+    yahoo.expects(:fetch_security_info).never
+    @security.stubs(:price_data_provider).returns(yahoo)
+    @security.prices.delete_all
+
+    assert @security.price_provider_down?
+    assert_nil @security.find_or_fetch_price(date: Date.current)
+    assert_equal [ 0, nil ], @security.import_provider_prices(start_date: 5.days.ago.to_date, end_date: Date.current)
+    assert_nil @security.import_provider_details
+  end
+
+  test "an unknown provider health status does not block fetches" do
+    yahoo = Provider::YahooFinance.new
+    yahoo.stubs(:health_status).returns(:unknown)
+    @security.stubs(:price_data_provider).returns(yahoo)
+
+    refute @security.price_provider_down?
+  end
+
   # --- provider_status ---
 
   test "provider_status returns provider_unavailable when assigned provider disabled" do

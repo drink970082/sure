@@ -563,6 +563,71 @@ class Provider::YahooFinanceTest < ActiveSupport::TestCase
   end
 
   # ================================
+  #    Crumb Fallback Tests
+  # ================================
+
+  def stub_public_chart(expectation:)
+    chart_response = mock
+    chart_response.stubs(:body).returns({
+      chart: {
+        result: [ {
+          meta: { exchangeName: "NMS", currency: "USD" },
+          timestamp: [ Time.utc(2024, 1, 15).to_i ],
+          indicators: { quote: [ { close: [ 100.0 ] } ] }
+        } ]
+      }
+    }.to_json)
+    public_client = mock
+    public_client.expects(:get).with(regexp_matches(%r{/v8/finance/chart/AAPL$})).public_send(expectation).returns(chart_response)
+    @provider.stubs(:client).returns(public_client)
+    @provider.stubs(:throttle_request)
+  end
+
+  test "fetch_security_prices falls back to the unauthenticated chart when the crumb is rate limited" do
+    date = Date.new(2024, 1, 15)
+    stub_public_chart(expectation: :once)
+    @provider.stubs(:fetch_cookie_and_crumb).raises(Provider::YahooFinance::RateLimitError.new("rate limited"))
+    @provider.expects(:authenticated_client).never
+
+    response = @provider.fetch_security_prices(
+      symbol: "AAPL",
+      exchange_operating_mic: "XNAS",
+      start_date: date,
+      end_date: date
+    )
+
+    assert response.success?
+    assert_equal 100.0, response.data.sole.price
+    assert @provider.send(:crumb_blocked?), "expected the crumb handshake to be circuit broken"
+  end
+
+  test "a blocked crumb is not requested again on the next price fetch" do
+    date = Date.new(2024, 1, 15)
+    stub_public_chart(expectation: :once)
+    @provider.send(:mark_crumb_blocked!)
+    @provider.expects(:fetch_cookie_and_crumb).never
+
+    response = @provider.fetch_security_prices(
+      symbol: "AAPL",
+      exchange_operating_mic: "XNAS",
+      start_date: date,
+      end_date: date
+    )
+
+    assert response.success?
+  end
+
+  test "a rate limited crumb keeps the health assessment honest" do
+    @provider.stubs(:fetch_health_cookie_and_crumb).raises(Provider::YahooFinance::RateLimitError.new("rate limited"))
+    @provider.expects(:unauthenticated_chart).never
+
+    result = @provider.send(:perform_health_check)
+
+    assert_equal :rate_limited, result[:status]
+    assert_equal :crumb, result[:stage]
+  end
+
+  # ================================
   #         Caching Tests
   # ================================
 

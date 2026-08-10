@@ -46,24 +46,39 @@ class Security::HealthChecker
     @security = security
   end
 
+  # A provider-wide outage is not evidence that this security is dead. Bail out
+  # before the counter (and before `last_health_check_at` is stamped) so the
+  # security stays due and gets a real check once the provider recovers.
+  # Without this, a multi-day Yahoo rate limit walks every security to
+  # MAX_CONSECUTIVE_FAILURES and `convert_to_offline_security!` deletes its
+  # entire price history.
   def run_check
-    Rails.logger.info("Running health check for #{security.ticker}")
+    if Security.provider_down?(provider)
+      Rails.logger.info("Skipping health check for #{security.ticker}: provider reports #{provider.health_status}")
+      return
+    end
 
-    if latest_provider_price
-      handle_success
-    else
-      handle_failure
-    end
-  rescue => e
-    Sentry.capture_exception(e) do |scope|
-      scope.set_tags(security_id: @security.id)
-    end
-  ensure
-    security.update!(last_health_check_at: Time.current)
+    perform_check
   end
 
   private
     attr_reader :security
+
+    def perform_check
+      Rails.logger.info("Running health check for #{security.ticker}")
+
+      if latest_provider_price
+        handle_success
+      else
+        handle_failure
+      end
+    rescue => e
+      Sentry.capture_exception(e) do |scope|
+        scope.set_tags(security_id: @security.id)
+      end
+    ensure
+      security.update!(last_health_check_at: Time.current)
+    end
 
     def provider
       security.price_data_provider

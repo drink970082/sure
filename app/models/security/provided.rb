@@ -18,6 +18,25 @@ module Security::Provided
       providers.first
     end
 
+    # Provider health statuses that mean "stop sending requests".
+    #
+    # `#health_status` is a cache read (the assessment is refreshed out of band
+    # by YahooFinanceHealthCheckJob), so this is cheap to call before a fetch.
+    # Deliberately NOT `#healthy?` — most providers implement that with a live
+    # API call (see Provider::Tiingo, Provider::TwelveData), which would cost an
+    # extra request per security. `:unknown` is not "down": on a cold cache it
+    # only means the assessment job hasn't run yet.
+    PROVIDER_DOWN_STATUSES = %i[rate_limited unavailable].freeze
+
+    # ponytail: Yahoo Finance is the only provider that publishes a health
+    # assessment today, so this checks for it by name rather than duck-typing.
+    # Widen to `respond_to?(:health_status)` when a second provider grows one.
+    def provider_down?(provider_instance)
+      return false unless provider_instance.is_a?(Provider::YahooFinance)
+
+      PROVIDER_DOWN_STATUSES.include?(provider_instance.health_status)
+    end
+
     # Get a specific provider by key name (e.g., "finnhub", "twelve_data")
     # Returns nil if the provider is disabled in settings or not configured.
     def provider_for(name)
@@ -173,6 +192,13 @@ module Security::Provided
     self.class.providers.first
   end
 
+  # True when this security's price provider is currently known to be blocking
+  # us (rate limited / unavailable). Callers skip the fetch instead of adding to
+  # the pile of requests that keeps the block alive.
+  def price_provider_down?
+    self.class.provider_down?(price_data_provider)
+  end
+
   # Returns the health status of this security's provider link.
   # Delegates to price_data_provider to avoid duplicating provider lookup logic.
   def provider_status
@@ -197,6 +223,10 @@ module Security::Provided
 
     # Make sure we have a data provider before fetching
     return nil unless price_data_provider.present?
+
+    # Provider is rate limiting / down — don't extend the block with more requests
+    return nil if price_provider_down?
+
     response = price_data_provider.fetch_security_price(
       symbol: ticker,
       exchange_operating_mic: exchange_operating_mic,
@@ -218,6 +248,11 @@ module Security::Provided
   def import_provider_details(clear_cache: false)
     unless price_data_provider.present?
       Rails.logger.warn("No provider configured for Security.import_provider_details")
+      return
+    end
+
+    if price_provider_down?
+      Rails.logger.info("Skipping metadata fetch for #{ticker}: #{price_data_provider.class.name} is #{price_data_provider.health_status}")
       return
     end
 
@@ -301,6 +336,11 @@ module Security::Provided
     unless price_data_provider.present?
       Rails.logger.warn("No provider configured for Security.import_provider_prices")
       return 0
+    end
+
+    if price_provider_down?
+      Rails.logger.info("Skipping price import for #{ticker}: #{price_data_provider.class.name} is #{price_data_provider.health_status}")
+      return [ 0, nil ]
     end
 
     importer = Security::Price::Importer.new(
