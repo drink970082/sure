@@ -115,11 +115,25 @@ ROCO:
 
 **建議**: 先 `bin/rails db:encryption:init` 產金鑰、填進 `.env` 取消註解、重接 3 條 Plaid, 再做 Bitget。這樣 Bitget 金鑰從第一天就是加密的。若不想動 Plaid, 至少要清楚知道交易所金鑰是明文落地 —— 那把 key 務必只開 read 權限。
 
-需要的 read-only endpoints:
+### 2.1.2 錢分三個口袋, 彼此看不到
+
+這是最容易漏的一點。`/api/v3/account/assets` **只涵蓋統一交易帳戶**, 放在資金帳戶或賺幣裡的錢完全不會出現在裡面。三個都要打:
+
+| 口袋 | Endpoint | USD 估值 |
+| --- | --- | --- |
+| 統一交易帳戶 (現貨/合約/槓桿) | `GET /api/v3/account/assets` | 有 (`usdValue`) |
+| 資金帳戶 | `GET /api/v3/account/funding-assets` | **沒有** |
+| 賺幣 / Cash+ | `GET /api/v2/earn/savings/assets` | **沒有** |
+
+- 賺幣沒有搬到 v3, 還在 v2, 但認證方式完全一樣。
+- 賺幣沒有合併檢視, `periodType` 要分 `flexible` (Cash+ 活期) 和 `fixed` (定期) 各打一次。分頁用 `limit` + `idLessThan`, 回 `resultList` + `endId`。
+- 後兩個沒有 USD 估值, 所以用 `GET /api/v2/spot/market/tickers` 補 —— 公開端點, 不用簽章, 一次回 1200+ 個交易對的 `lastPr`。
+- 賺幣的 `totalProfit` 是「已累積但還沒入帳」的利息, **不要**加進持倉 —— 它實際發放時會進到真實餘額, 兩邊都算會重複。只取 `holdAmount`。
+
+需要的其餘 read-only endpoints:
 
 | 用途 | Endpoint | 備註 |
 | --- | --- | --- |
-| 帳戶資產 (含 USD 估值) | `GET /api/v3/account/assets` | 對應 Kraken `BalanceEx` |
 | 資金流水 | `GET /api/v3/account/financial-records` | 分頁: `cursor`, `startTime`, `endTime`, `limit` (max 100) |
 | 成交明細 | `GET /api/v3/trade/fills` | rate limit 20 req/s per UID; 需 UTA trade(read) 權限 |
 | 歷史委託 | `GET /api/v3/trade/history-orders` | 通常不需要, fills 就夠 |
