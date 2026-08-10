@@ -221,27 +221,60 @@ git config rerere.autoupdate true
 
 原則: **新增檔案不會衝突, 修改上游檔案才會**。所以能移到新檔案的就移。
 
-可以完全消掉衝突的 (改成新檔案 + initializer):
+**已完成, 零接觸** (透過 `config/initializers/fork_providers.rb`):
 
-- `provider/metadata.rb` 與 `provider_connection_status.rb`: 寫一支 `config/initializers/fork_providers.rb`, 在裡面用 `Provider::Metadata::REGISTRY` / `ProviderConnectionStatus` 的常數做 runtime merge, 而不是編輯原檔。這兩個常數目前是 `.freeze`, 所以要嘛改成可注入 (動 1 行, 但那 1 行永遠不衝突), 要嘛 `remove_const` + 重設 (醜但零衝突)。
-- `family.rb` 的 include: 上游那行是「一行塞所有 concern」, 必衝突。改成在 initializer 裡 `Family.include(Family::BitgetConnectable)` — 完全不碰 family.rb。
-- `account.rb` 的 `create_from_bitget_account`: 放進 `BitgetAccount` 自己, 或用 concern 從 initializer 注入。
-- `routes.rb`: Rails 支援 `config/routes/*.rb` 分檔。把 fork 專屬路由放 `config/routes/fork.rb`, 主檔只需一行 `draw(:fork)` (上游那行永遠不變 -> 不衝突)。
+- `family.rb` 的 include: 上游那行是「一行塞所有 concern」, 必衝突。改成 `Family.include(Family::BitgetConnectable)` — 完全不碰 family.rb。
+- `account.rb` 的 `create_from_bitget_account`: 抽成 `app/models/account/bitget_creatable.rb`, 用 `Account.extend` 掛上。
 
-無法完全消掉、只能認了的 (剩 2 個):
+注意 initializer 必須包在 `Rails.application.config.to_prepare` 裡, 否則 dev 模式 Zeitwerk reload 之後 concern 會掉。
 
-- `app/views/accounts/index.html.erb` 那條超長 empty 條件 — 這是上游的設計缺陷。交給 rerere。
-- `app/controllers/settings/providers_controller.rb` 的 5 處 — 可以部分抽成 helper, 但不值得, 也交給 rerere。
+**已完成, 只碰穩定位置:**
 
-做完之後衝突面: **7 個檔案 -> 2 個檔案**, 而且那 2 個 rerere 會自動解。
+- `routes.rb`: fork 路由放 `config/routes/fork.rb`, 主檔只在 `draw do` 區塊最後一行加 `draw(:fork)`。
+
+**評估後決定不做的:**
+
+- `provider/metadata.rb` 與 `provider_connection_status.rb` 各 1 行 registry entry。原本想用 `remove_const` 在 initializer 裡繞過 frozen 常數, 但那比「每次 rebase 花 5 秒選 keep-both」貴。直接接受。
+
+**只能認了、靠 rerere 的 (實際是 3 個, 不是原本樂觀估的 2 個):**
+
+- `app/views/accounts/index.html.erb` 那條超長 empty 條件 — 上游的設計缺陷, 每加一個 provider 就變, rerere 的比對可能失效。
+- `app/controllers/settings/providers_controller.rb` 的 5 處。
+- `app/controllers/accounts_controller.rb` 的 2 處。
+
+加上 `settings_helper.rb` 一個 `when` 分支和 `financial_data_reset.rb` 一行, Bitget 實際碰到的上游檔案是 **8 個**。原本寫「7 檔壓到 2 檔」是樂觀了。真正的槓桿在 rerere + rebase 流程和下面 3.3 的 schema.rb recipe, 不在把接點數字壓到最低。
 
 ### 3.3 其他保命措施
 
 - **`db/schema.rb` 永遠會衝突。** 解法: 衝突時直接 `git checkout --theirs db/schema.rb` 取上游版, 然後 `bin/rails db:migrate` 重新產生。不要手動解 schema.rb。
-- **migration timestamp 用未來日期** (例如 `20991231_`), 讓你的 migration 永遠排在上游後面, 避免 schema 版本號來回跳。
+  - **但要先確認產生出來的 diff 只有你的表。** 實測時 `db:migrate` 產出的 schema.rb 帶了大量無關雜訊: `ActiveRecord::Schema[7.2]` 變 `[8.1]`、欄位順序重排、`plpgsql` 變 `pg_catalog.plpgsql`、check constraint 被改寫。原因是 committed 的 schema.rb 是用比 image 更舊的 Rails 產生的。整包收下會讓之後每次 rebase 更痛, 正好反效果。遇到這種情況改成手動把自己的 `create_table` / `add_foreign_key` 區塊接進去 (依字母序), 並更新 `define(version:)` 那行, 其餘位元不動。做完用 `bin/rails db:schema:load` 到一個 scratch DB 驗證。
+- **migration timestamp 不能用未來日期。** 原本打算用 `20991231_` 讓 fork migration 永遠排在上游後面, 但 Rails 會擋: `ActiveRecord::InvalidMigrationTimestampError: Timestamp must be in form YYYYMMDDHHMMSS, and less than <now>`。只能用當下時間, 上游之後的 migration 會排在你前面, 靠上面那條 schema.rb recipe 處理。
 - **不要動 locale 的 en.yml。** 新 key 放 `config/locales/views/bitget_items/en.yml` (新檔, 不衝突)。避免碰 `config/locales/views/settings/en.yml` — 若非碰不可, 加在檔案最尾端 (衝突機率最低)。
 - **每個 fork commit 加固定前綴** `fork:`, 方便 `git log --grep="^fork:"` 一眼看出你疊了什麼。
 - **fork 專屬文件/腳本一律放 `docs/fork/` 和 `lib/tasks/fork/`** — 上游不會有這兩個目錄, 永遠不衝突。
+
+---
+
+### 3.4 部署: fork 的程式碼怎麼進到跑著的站台
+
+這是最容易被漏掉的一環。`/home/halcyon/docker-apps/sure/compose.yml` 用的是上游預建 image `ghcr.io/we-promise/sure:stable`, **沒有掛原始碼**, 所以這個 repo 改什麼都不會生效。
+
+目前用的是 bind-mount 單檔覆蓋 (`config/locales`、`provider/yahoo_finance.rb`、`config/exchanges.yml`、`security/provided.rb`、`security/health_checker.rb`)。這招的限制與風險:
+
+- **只對「修改既有檔案」有效。** 新增檔案、新 route、新 view、新 migration 都不行 —— Bitget 全都是, 所以 Bitget 無法用 mount 上線。
+- **上游 image 更新後會靜默配錯版本。** 掛進去的是 fork 版檔案, 但周圍是新版上游程式碼。沒有任何機制會警告。
+- **web 和 worker 要分別掛。** 兩個容器各自有自己的檔案系統。`ImportMarketDataJob` 跑在 worker, 所以行情相關的檔案掛在 web 上是沒用的。
+
+**判斷點: 掛到第 4、5 個檔案時, build 自己的 image 的 CP 值已經超過繼續貼 mount。** 做法是 compose 的 `web` 和 `worker` 把 `image:` 換成 `build: /home/halcyon/root/sure` (repo 根目錄已有 Dockerfile), 之後更新流程變成:
+
+```bash
+git fetch origin && git rebase origin/main
+docker compose build
+docker compose up -d
+docker compose run --rm web bin/rails db:migrate
+```
+
+切過去的同時要把所有 `TEMPORARY:` 的 bind-mount 拿掉, 否則會用 fork 的舊檔覆蓋自己剛 build 出來的新檔。
 
 ---
 
@@ -252,6 +285,7 @@ git config rerere.autoupdate true
 3. 集保 e 存摺 PDF 走 `PdfImport` 試一次, 看 LLM 抽得準不準 — 1 小時。
 4. Bitget provider: 照 Kraken 抄 — 約 1 到 2 天。
 5. 做 3.2 的衝突面壓縮 (initializer 化) — 半天, 但可以等 Bitget 做完再做。
+6. 切成自 build image (3.4) — Bitget 要能真的用就必須做。
 
 ---
 
