@@ -15,6 +15,9 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
     @provider = mock
     @provider.stubs(:get_fills).returns({ "list" => [], "cursor" => nil })
     @provider.stubs(:get_financial_records).returns({ "list" => [], "cursor" => nil })
+    @provider.stubs(:get_funding_assets).returns([])
+    @provider.stubs(:get_savings_assets).returns({ "resultList" => [], "endId" => nil })
+    @provider.stubs(:get_spot_tickers).returns(spot_tickers)
   end
 
   test "creates a combined bitget account from account assets" do
@@ -154,6 +157,125 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
     assert_operator earliest, :>=, (Provider::Bitget::MAX_HISTORY_DAYS + 1).days.ago
   end
 
+  test "imports funding account balances priced from the public ticker table" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_funding_assets).returns([
+      { "coin" => "ETH", "available" => "1.5", "frozen" => "0.5", "balance" => "2.0" },
+      { "coin" => "USDT", "available" => "100", "frozen" => "0", "balance" => "100" }
+    ])
+
+    BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    funding = @item.bitget_accounts.first.raw_payload["assets"].select { |a| a["source"] == "funding" }
+    eth = funding.find { |a| a["symbol"] == "ETH" }
+
+    assert_in_delta 2500, eth["price_usd"].to_d, 0.01
+    assert_in_delta 5000, eth["amount_usd"].to_d, 0.01
+    assert_equal "0.5", eth["locked"]
+    # Stablecoins are worth a dollar without needing a ticker.
+    assert_in_delta 100, funding.find { |a| a["symbol"] == "USDT" }["amount_usd"].to_d, 0.01
+  end
+
+  test "imports Earn positions for both period types, principal only" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_savings_assets).with(period_type: "flexible", id_less_than: nil).returns(
+      { "resultList" => [ savings_row(coin: "USDT", amount: "500", period: "flexible") ], "endId" => nil }
+    )
+    @provider.stubs(:get_savings_assets).with(period_type: "fixed", id_less_than: nil).returns(
+      { "resultList" => [ savings_row(coin: "ETH", amount: "1", period: "fixed") ], "endId" => nil }
+    )
+
+    BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    assets = @item.bitget_accounts.first.raw_payload["assets"]
+    flexible = assets.find { |a| a["source"] == "earn_flexible" }
+    fixed = assets.find { |a| a["source"] == "earn_fixed" }
+
+    assert_equal "USDT", flexible["symbol"]
+    # holdAmount only - the 25.0 of totalProfit must not be added on top.
+    assert_in_delta 500, flexible["balance"].to_d, 0.01
+    assert_in_delta 500, flexible["amount_usd"].to_d, 0.01
+    assert_equal "ETH", fixed["symbol"]
+    assert_in_delta 2500, fixed["amount_usd"].to_d, 0.01
+  end
+
+  test "total equity sums all three pots" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_funding_assets).returns([
+      { "coin" => "USDT", "available" => "100", "frozen" => "0", "balance" => "100" }
+    ])
+    @provider.stubs(:get_savings_assets).with(period_type: "flexible", id_less_than: nil).returns(
+      { "resultList" => [ savings_row(coin: "USDT", amount: "500", period: "flexible") ], "endId" => nil }
+    )
+    @provider.stubs(:get_savings_assets).with(period_type: "fixed", id_less_than: nil).returns(
+      { "resultList" => [], "endId" => nil }
+    )
+
+    result = BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    # accountEquity 11.14 (trading) + 100 (funding) + 500 (earn)
+    assert_in_delta 611.14, @item.bitget_accounts.first.current_balance, 0.01
+    assert_equal({ "spot" => 2, "funding" => 1, "earn_flexible" => 1 }, result[:assets_by_source])
+  end
+
+  test "the same coin in several pots becomes several assets, not one" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_funding_assets).returns([
+      { "coin" => "USDT", "available" => "100", "frozen" => "0", "balance" => "100" }
+    ])
+
+    BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    usdt = @item.bitget_accounts.first.raw_payload["assets"].select { |a| a["symbol"] == "USDT" }
+    assert_equal %w[spot funding], usdt.map { |a| a["source"] }
+  end
+
+  test "keeps the trading account when the key cannot read funding or Earn" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_funding_assets).raises(Provider::Bitget::PermissionError.new("Incorrect permissions"))
+    @provider.stubs(:get_savings_assets).raises(Provider::Bitget::PermissionError.new("Incorrect permissions"))
+
+    result = BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    assert result[:success]
+    assert_equal({ "spot" => 2 }, result[:assets_by_source])
+    assert_equal "good", @item.reload.status
+  end
+
+  test "marks funding coins with no ticker as missing prices" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_funding_assets).returns([
+      { "coin" => "NOSUCHCOIN", "available" => "10", "frozen" => "0", "balance" => "10" }
+    ])
+
+    BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    account = @item.bitget_accounts.first
+    row = account.raw_payload["assets"].find { |a| a["symbol"] == "NOSUCHCOIN" }
+    assert_equal "missing", row["price_status"]
+    assert_includes account.extra.dig("bitget", "missing_prices"), "NOSUCHCOIN"
+  end
+
+  test "an unreachable ticker table does not fail the sync" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_spot_tickers).raises(Provider::Bitget::ApiError.new("service busy"))
+    @provider.stubs(:get_funding_assets).returns([
+      { "coin" => "ETH", "available" => "2", "frozen" => "0", "balance" => "2" }
+    ])
+
+    result = BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    assert result[:success]
+    row = @item.bitget_accounts.first.raw_payload["assets"].find { |a| a["symbol"] == "ETH" }
+    assert_equal "missing", row["price_status"]
+  end
+
+  test "rejects an unsupported savings period type at the provider boundary" do
+    provider = Provider::Bitget.new(api_key: "k", api_secret: "s", passphrase: "p")
+
+    assert_raises(ArgumentError) { provider.get_savings_assets(period_type: "perpetual") }
+  end
+
   private
 
     def account_assets
@@ -163,6 +285,27 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
           { "coin" => "BTC", "equity" => "0.0001", "usdValue" => "5.0", "balance" => "0.0001", "available" => "0.0001", "locked" => "0", "debt" => "0" },
           { "coin" => "USDT", "equity" => "6.19300826", "usdValue" => "6.19299777", "balance" => "6.19300826", "available" => "6.19300826", "locked" => "0", "debt" => "0" }
         ]
+      }
+    end
+
+    def spot_tickers
+      [
+        { "symbol" => "BTCUSDT", "lastPr" => "60000" },
+        { "symbol" => "ETHUSDT", "lastPr" => "2500" },
+        { "symbol" => "BTCUSDC", "lastPr" => "60010" }
+      ]
+    end
+
+    def savings_row(coin:, amount:, period:)
+      {
+        "productId" => "p-#{coin}",
+        "orderId" => "o-#{coin}",
+        "productCoin" => coin,
+        "interestCoin" => coin,
+        "periodType" => period,
+        "holdAmount" => amount,
+        "totalProfit" => "25.0",
+        "status" => "in_holding"
       }
     end
 end

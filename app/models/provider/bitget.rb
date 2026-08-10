@@ -36,8 +36,19 @@ class Provider::Bitget
   UNSAFE_QUERY_VALUE = /[^A-Za-z0-9_.\-]/
 
   ACCOUNT_ASSETS_PATH = "/api/v3/account/assets"
+  FUNDING_ASSETS_PATH = "/api/v3/account/funding-assets"
   FINANCIAL_RECORDS_PATH = "/api/v3/account/financial-records"
   FILLS_PATH = "/api/v3/trade/fills"
+
+  # Earn has not been migrated to the UTA v3 namespace; it is still served from
+  # v2. Auth is identical, only the path differs.
+  SAVINGS_ASSETS_PATH = "/api/v2/earn/savings/assets"
+
+  # Public, unauthenticated. One call returns every spot pair, which is how
+  # funding and Earn balances get a USD value - neither endpoint reports one.
+  SPOT_TICKERS_PATH = "/api/v2/spot/market/tickers"
+
+  SAVINGS_PERIOD_TYPES = %w[flexible fixed].freeze
 
   MAX_PAGE_SIZE = 100
 
@@ -55,8 +66,39 @@ class Provider::Bitget
 
   # Account equity plus the per-coin asset list. Doubles as the credential
   # check: it is the cheapest authenticated call Bitget exposes.
+  #
+  # Covers the unified trading account only. Money parked in the funding
+  # account or in Earn is invisible here - see #get_funding_assets and
+  # #get_savings_assets.
   def get_account_assets
     private_get(ACCOUNT_ASSETS_PATH)
+  end
+
+  # The funding account, i.e. the pot coins sit in between transfers. Returns a
+  # bare array of {coin, available, frozen, balance} with no USD valuation.
+  def get_funding_assets(coin: nil)
+    private_get(FUNDING_ASSETS_PATH, { "coin" => coin })
+  end
+
+  # Earn positions. `period_type` is "flexible" (Cash+ and the like) or
+  # "fixed"; there is no combined view, so callers ask for each in turn.
+  # Reports holdAmount in coin units with no USD valuation.
+  def get_savings_assets(period_type:, limit: MAX_PAGE_SIZE, id_less_than: nil)
+    unless SAVINGS_PERIOD_TYPES.include?(period_type.to_s)
+      raise ArgumentError, "Unsupported Bitget savings period type: #{period_type}"
+    end
+
+    private_get(SAVINGS_ASSETS_PATH, {
+      "periodType" => period_type,
+      "limit" => limit,
+      "idLessThan" => id_less_than
+    })
+  end
+
+  # Every spot pair's last price, unauthenticated. Used to value coins that the
+  # authenticated endpoints report without a usdValue.
+  def get_spot_tickers
+    public_get(SPOT_TICKERS_PATH)
   end
 
   # Deposits, withdrawals, fees and rewards. `category` is mandatory.
@@ -97,6 +139,10 @@ class Provider::Bitget
       )
 
       handle_response(response)
+    end
+
+    def public_get(path, params = {})
+      handle_response(self.class.get("#{path}#{canonical_query(params)}"))
     end
 
     # Builds the "?a=1&b=2" suffix that is both signed and sent. Keys are sorted
