@@ -101,6 +101,20 @@ ROCO:
   - **GET 的 query params 必須依 key 字母升冪排序** (這點跟 Kraken 不同, 最容易寫錯)。
   - POST 的 body 是 JSON 字串, 且簽章用的字串必須跟實際送出的 body 位元組完全一致。
 
+### 2.1.1 阻擋項: 本機 instance 的 API 金鑰目前是明文儲存
+
+在做 Bitget 之前必須先決定怎麼處理。查證結果:
+
+- `/home/halcyon/docker-apps/sure/.env` 的三把金鑰 (`ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY` / `_DETERMINISTIC_KEY` / `_KEY_DERIVATION_SALT`) 是**註解掉的**, 沒有進到容器。
+- `app/models/concerns/encryptable.rb` 的 `encryption_ready?` 用的是 `ActiveRecordEncryptionConfig.explicitly_configured?`。它是 false, 所以 `KrakenItem`/`BitgetItem` 那組 `if encryption_ready?` 包住的 `encrypts` 宣告**整組被跳過**, 欄位直接以明文寫進 Postgres。
+- 注意 `config/initializers/active_record_encryption.rb:23-37`: self-hosted 沒給 env 時會從 `SECRET_KEY_BASE` 自動衍生金鑰。所以 AR 這一側其實有設定, 但 model 這一側因為 gate 在 `explicitly_configured?` 而不會加密。兩者不一致, 容易誤判成「已經有加密」。
+
+也就是說 Bitget 的 `api_key` / `api_secret` / `passphrase` 現況下會是明文。
+
+**要打開加密的代價**: `config/application.rb` 沒有設 `support_unencrypted_data`, 所以一旦補上 env 金鑰, 既有的 3 筆 `PlaidItem` 明文 token 會變成無法解密, 那 3 條 Plaid 連線要重接。
+
+**建議**: 先 `bin/rails db:encryption:init` 產金鑰、填進 `.env` 取消註解、重接 3 條 Plaid, 再做 Bitget。這樣 Bitget 金鑰從第一天就是加密的。若不想動 Plaid, 至少要清楚知道交易所金鑰是明文落地 —— 那把 key 務必只開 read 權限。
+
 需要的 read-only endpoints:
 
 | 用途 | Endpoint | 備註 |
