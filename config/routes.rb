@@ -844,4 +844,8 @@ Rails.application.routes.draw do
 
   # Defines the root path route ("/")
   root "pages#dashboard"
+
+  # Fork-only routes live in config/routes/fork.rb so upstream rebases never
+  # conflict on them. Keep this as the last line of the block.
+  draw(:fork)
 end
