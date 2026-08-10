@@ -26,7 +26,7 @@ class BitgetItem::Importer
     # value, so the other two are priced from the public ticker table.
     trading_assets = parse_trading_assets(account_data)
     funding_assets = parse_funding_assets(fetch_funding_assets)
-    earn_assets = parse_earn_assets(fetch_savings_assets)
+    earn_assets = parse_earn_assets(fetch_earn_assets)
     assets = trading_assets + funding_assets + earn_assets
 
     fills = fetch_fills
@@ -110,25 +110,38 @@ class BitgetItem::Importer
       end
     end
 
-    # Earn reports holdAmount (principal) and totalProfit (accrued but not yet
-    # credited) separately. Only the principal is counted: accrued interest
+    # Earn reports holdingAmount (principal) and totalProfit (accrued but not
+    # yet credited) separately. Only the principal is counted: accrued interest
     # lands in a real balance when it is paid out, and counting it here as well
     # would show it twice.
+    #
+    # usdtHoldingAmount is Bitget's own valuation, so unlike the funding account
+    # this needs no ticker lookup - but fall back to one if it is absent.
     def parse_earn_assets(rows)
       Array(rows).filter_map do |asset|
         symbol = asset["productCoin"].to_s.upcase
         next if symbol.blank?
 
-        balance = asset["holdAmount"].to_d
+        balance = asset["holdingAmount"].to_d
         next if balance.zero?
 
-        build_priced_asset(
+        usd_value = asset["usdtHoldingAmount"].presence&.to_d
+        next build_priced_asset(
+          symbol: symbol, balance: balance, available: 0.to_d, locked: balance, source: "earn"
+        ) if usd_value.nil?
+
+        {
           symbol: symbol,
-          balance: balance,
-          available: 0.to_d,
-          locked: balance,
-          source: "earn_#{asset['periodType'].presence || 'flexible'}"
-        )
+          price_symbol: symbol,
+          balance: balance.to_s("F"),
+          available: "0.0",
+          locked: balance.to_s("F"),
+          debt: "0.0",
+          price_usd: (balance.zero? ? nil : (usd_value / balance).to_s("F")),
+          amount_usd: usd_value.to_s("F"),
+          price_status: "exact",
+          source: "earn"
+        }
       end
     end
 
@@ -183,34 +196,21 @@ class BitgetItem::Importer
       end
     end
 
+    # Both of these are secondary pots. Any Bitget-side failure degrades to
+    # empty rather than taking the sync down with it - the trading account is
+    # the part that must always land. Rescuing the provider's own error base
+    # class keeps genuine bugs in this file loud.
     def fetch_funding_assets
       bitget_provider.get_funding_assets
-    rescue Provider::Bitget::PermissionError => e
+    rescue Provider::Bitget::Error => e
       degrade("funding account", e)
       []
     end
 
-    # Earn has no combined view, so flexible and fixed are pulled separately and
-    # concatenated. A key without Earn read permission degrades to empty rather
-    # than failing the whole sync.
-    def fetch_savings_assets
-      Provider::Bitget::SAVINGS_PERIOD_TYPES.flat_map do |period_type|
-        cursor = nil
-        rows = []
-
-        MAX_PAGES.times do
-          data = bitget_provider.get_savings_assets(period_type: period_type, id_less_than: cursor) || {}
-          page = Array(data["resultList"])
-          rows.concat(page)
-
-          cursor = data["endId"].presence
-          break if cursor.nil? || page.empty?
-        end
-
-        rows
-      end
-    rescue Provider::Bitget::PermissionError => e
-      degrade("Earn savings", e)
+    def fetch_earn_assets
+      Array((bitget_provider.get_elite_assets || {})["resultList"])
+    rescue Provider::Bitget::Error => e
+      degrade("Earn", e)
       []
     end
 

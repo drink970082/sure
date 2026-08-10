@@ -40,15 +40,16 @@ class Provider::Bitget
   FINANCIAL_RECORDS_PATH = "/api/v3/account/financial-records"
   FILLS_PATH = "/api/v3/trade/fills"
 
-  # Earn has not been migrated to the UTA v3 namespace; it is still served from
-  # v2. Auth is identical, only the path differs.
-  SAVINGS_ASSETS_PATH = "/api/v2/earn/savings/assets"
+  # Earn for a unified account. The classic v2 Earn endpoint
+  # (/api/v2/earn/savings/assets) is NOT usable here: once an account is
+  # upgraded to UTA, Bitget rejects the whole authenticated v2 surface with
+  # 40085 "You are in Unified Account mode, and the Classic Account API is not
+  # supported at this time". Public v2 market data still works.
+  ELITE_ASSETS_PATH = "/api/v3/earn/elite-assets"
 
   # Public, unauthenticated. One call returns every spot pair, which is how
-  # funding and Earn balances get a USD value - neither endpoint reports one.
+  # funding balances get a USD value - that endpoint reports none.
   SPOT_TICKERS_PATH = "/api/v2/spot/market/tickers"
-
-  SAVINGS_PERIOD_TYPES = %w[flexible fixed].freeze
 
   MAX_PAGE_SIZE = 100
 
@@ -80,19 +81,14 @@ class Provider::Bitget
     private_get(FUNDING_ASSETS_PATH, { "coin" => coin })
   end
 
-  # Earn positions. `period_type` is "flexible" (Cash+ and the like) or
-  # "fixed"; there is no combined view, so callers ask for each in turn.
-  # Reports holdAmount in coin units with no USD valuation.
-  def get_savings_assets(period_type:, limit: MAX_PAGE_SIZE, id_less_than: nil)
-    unless SAVINGS_PERIOD_TYPES.include?(period_type.to_s)
-      raise ArgumentError, "Unsupported Bitget savings period type: #{period_type}"
-    end
-
-    private_get(SAVINGS_ASSETS_PATH, {
-      "periodType" => period_type,
-      "limit" => limit,
-      "idLessThan" => id_less_than
-    })
+  # On-chain Elite Earn positions (BGUSD / BGBTC / BGSOL). Unlike the funding
+  # account this one does report a USD equivalent, so it needs no ticker lookup.
+  #
+  # This is the only Earn surface a unified account can read. Classic Savings
+  # positions - if any remain - are not reachable through the API at all while
+  # the account is in UTA mode.
+  def get_elite_assets
+    private_get(ELITE_ASSETS_PATH)
   end
 
   # Every spot pair's last price, unauthenticated. Used to value coins that the
@@ -189,6 +185,14 @@ class Provider::Bitget
       parsed = response.parsed_response
 
       unless response.code.between?(200, 299)
+        # Bitget puts the real reason in the body even on a 4xx (for example
+        # 40085 "You are in Unified Account mode, and the Classic Account API is
+        # not supported"). Reporting only the HTTP status throws that away and
+        # makes the failure undiagnosable from the sync error alone.
+        if parsed.is_a?(Hash) && parsed["code"].present?
+          raise classified_error(parsed["code"].to_s, parsed["msg"].to_s)
+        end
+
         raise ApiError, "Bitget API request failed: #{response.code}"
       end
 

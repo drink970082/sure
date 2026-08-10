@@ -16,7 +16,7 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
     @provider.stubs(:get_fills).returns({ "list" => [], "cursor" => nil })
     @provider.stubs(:get_financial_records).returns({ "list" => [], "cursor" => nil })
     @provider.stubs(:get_funding_assets).returns([])
-    @provider.stubs(:get_savings_assets).returns({ "resultList" => [], "endId" => nil })
+    @provider.stubs(:get_elite_assets).returns({ "resultList" => [] })
     @provider.stubs(:get_spot_tickers).returns(spot_tickers)
   end
 
@@ -176,27 +176,37 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
     assert_in_delta 100, funding.find { |a| a["symbol"] == "USDT" }["amount_usd"].to_d, 0.01
   end
 
-  test "imports Earn positions for both period types, principal only" do
+  test "imports Earn positions using Bitget's own USD valuation" do
     @provider.stubs(:get_account_assets).returns(account_assets)
-    @provider.stubs(:get_savings_assets).with(period_type: "flexible", id_less_than: nil).returns(
-      { "resultList" => [ savings_row(coin: "USDT", amount: "500", period: "flexible") ], "endId" => nil }
-    )
-    @provider.stubs(:get_savings_assets).with(period_type: "fixed", id_less_than: nil).returns(
-      { "resultList" => [ savings_row(coin: "ETH", amount: "1", period: "fixed") ], "endId" => nil }
-    )
+    @provider.stubs(:get_elite_assets).returns({ "resultList" => [
+      elite_row(coin: "BGUSD", amount: "500", usd: "500.5"),
+      elite_row(coin: "BGSOL", amount: "2", usd: "300")
+    ] })
 
     BitgetItem::Importer.new(@item, bitget_provider: @provider).import
 
-    assets = @item.bitget_accounts.first.raw_payload["assets"]
-    flexible = assets.find { |a| a["source"] == "earn_flexible" }
-    fixed = assets.find { |a| a["source"] == "earn_fixed" }
+    earn = @item.bitget_accounts.first.raw_payload["assets"].select { |a| a["source"] == "earn" }
+    bgusd = earn.find { |a| a["symbol"] == "BGUSD" }
 
-    assert_equal "USDT", flexible["symbol"]
-    # holdAmount only - the 25.0 of totalProfit must not be added on top.
-    assert_in_delta 500, flexible["balance"].to_d, 0.01
-    assert_in_delta 500, flexible["amount_usd"].to_d, 0.01
-    assert_equal "ETH", fixed["symbol"]
-    assert_in_delta 2500, fixed["amount_usd"].to_d, 0.01
+    # holdingAmount only - the 25.0 of totalProfit must not be added on top.
+    assert_in_delta 500, bgusd["balance"].to_d, 0.01
+    # usdtHoldingAmount is used directly rather than a ticker lookup, so the
+    # small premium over principal survives.
+    assert_in_delta 500.5, bgusd["amount_usd"].to_d, 0.01
+    assert_equal "exact", bgusd["price_status"]
+    assert_in_delta 150, earn.find { |a| a["symbol"] == "BGSOL" }["price_usd"].to_d, 0.01
+  end
+
+  test "falls back to the ticker table when Earn omits a USD valuation" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_elite_assets).returns({ "resultList" => [
+      elite_row(coin: "ETH", amount: "2", usd: nil)
+    ] })
+
+    BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    eth = @item.bitget_accounts.first.raw_payload["assets"].find { |a| a["source"] == "earn" }
+    assert_in_delta 5000, eth["amount_usd"].to_d, 0.01
   end
 
   test "total equity sums all three pots" do
@@ -204,18 +214,15 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
     @provider.stubs(:get_funding_assets).returns([
       { "coin" => "USDT", "available" => "100", "frozen" => "0", "balance" => "100" }
     ])
-    @provider.stubs(:get_savings_assets).with(period_type: "flexible", id_less_than: nil).returns(
-      { "resultList" => [ savings_row(coin: "USDT", amount: "500", period: "flexible") ], "endId" => nil }
-    )
-    @provider.stubs(:get_savings_assets).with(period_type: "fixed", id_less_than: nil).returns(
-      { "resultList" => [], "endId" => nil }
-    )
+    @provider.stubs(:get_elite_assets).returns({ "resultList" => [
+      elite_row(coin: "BGUSD", amount: "500", usd: "500")
+    ] })
 
     result = BitgetItem::Importer.new(@item, bitget_provider: @provider).import
 
     # accountEquity 11.14 (trading) + 100 (funding) + 500 (earn)
     assert_in_delta 611.14, @item.bitget_accounts.first.current_balance, 0.01
-    assert_equal({ "spot" => 2, "funding" => 1, "earn_flexible" => 1 }, result[:assets_by_source])
+    assert_equal({ "spot" => 2, "funding" => 1, "earn" => 1 }, result[:assets_by_source])
   end
 
   test "the same coin in several pots becomes several assets, not one" do
@@ -233,7 +240,7 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
   test "keeps the trading account when the key cannot read funding or Earn" do
     @provider.stubs(:get_account_assets).returns(account_assets)
     @provider.stubs(:get_funding_assets).raises(Provider::Bitget::PermissionError.new("Incorrect permissions"))
-    @provider.stubs(:get_savings_assets).raises(Provider::Bitget::PermissionError.new("Incorrect permissions"))
+    @provider.stubs(:get_elite_assets).raises(Provider::Bitget::PermissionError.new("Incorrect permissions"))
 
     result = BitgetItem::Importer.new(@item, bitget_provider: @provider).import
 
@@ -270,10 +277,16 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
     assert_equal "missing", row["price_status"]
   end
 
-  test "rejects an unsupported savings period type at the provider boundary" do
-    provider = Provider::Bitget.new(api_key: "k", api_secret: "s", passphrase: "p")
+  test "a Bitget-side Earn failure does not take the sync down" do
+    @provider.stubs(:get_account_assets).returns(account_assets)
+    @provider.stubs(:get_elite_assets).raises(
+      Provider::Bitget::ApiError.new("You are in Unified Account mode, and the Classic Account API is not supported at this time (code 40085)")
+    )
 
-    assert_raises(ArgumentError) { provider.get_savings_assets(period_type: "perpetual") }
+    result = BitgetItem::Importer.new(@item, bitget_provider: @provider).import
+
+    assert result[:success]
+    assert_equal({ "spot" => 2 }, result[:assets_by_source])
   end
 
   private
@@ -296,16 +309,14 @@ class BitgetItem::ImporterTest < ActiveSupport::TestCase
       ]
     end
 
-    def savings_row(coin:, amount:, period:)
+    def elite_row(coin:, amount:, usd:)
       {
         "productId" => "p-#{coin}",
-        "orderId" => "o-#{coin}",
         "productCoin" => coin,
-        "interestCoin" => coin,
-        "periodType" => period,
-        "holdAmount" => amount,
-        "totalProfit" => "25.0",
-        "status" => "in_holding"
+        "holdingAmount" => amount,
+        "usdtHoldingAmount" => usd,
+        "exchangeRate" => "1",
+        "totalProfit" => "25.0"
       }
     end
 end

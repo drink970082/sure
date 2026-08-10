@@ -108,9 +108,33 @@ class Provider::BitgetTest < ActiveSupport::TestCase
   end
 
   test "handle response raises api error for non 2xx" do
-    response = mock_httparty_response(500, { "code" => "50001" })
+    response = mock_httparty_response(500, nil)
 
     assert_raises(Provider::Bitget::ApiError) do
+      @provider.send(:handle_response, response)
+    end
+  end
+
+  # Regression: reporting only the HTTP status on a 4xx discarded the body,
+  # which is the only place Bitget says what actually went wrong.
+  test "handle response surfaces the body message on a 4xx" do
+    response = mock_httparty_response(400, {
+      "code" => "40085",
+      "msg" => "You are in Unified Account mode, and the Classic Account API is not supported at this time"
+    })
+
+    error = assert_raises(Provider::Bitget::ApiError) do
+      @provider.send(:handle_response, response)
+    end
+
+    assert_includes error.message, "Unified Account mode"
+    assert_includes error.message, "40085"
+  end
+
+  test "handle response classifies a 4xx body the same way as a 200 body" do
+    response = mock_httparty_response(401, { "code" => "40009", "msg" => "sign signature error" })
+
+    assert_raises(Provider::Bitget::AuthenticationError) do
       @provider.send(:handle_response, response)
     end
   end
