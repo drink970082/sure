@@ -7,3 +7,18 @@
 #
 # Loaded by `draw(:fork)` and evaluated inside the router, so write plain route
 # declarations - no surrounding `Rails.application.routes.draw` block.
+
+resources :bitget_items, only: [ :create, :update, :destroy ] do
+  collection do
+    get :select_accounts
+    post :link_accounts
+    get :select_existing_account
+    post :link_existing_account
+  end
+
+  member do
+    post :sync
+    get :setup_accounts
+    post :complete_account_setup
+  end
+end

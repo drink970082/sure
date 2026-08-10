@@ -1,0 +1,20 @@
+one:
+  family: dylan_family
+  name: My Bitget
+  api_key: test_bitget_key_123
+  api_secret: test_bitget_secret_456
+  passphrase: test_bitget_passphrase_789
+  status: good
+  institution_name: Bitget
+  institution_domain: bitget.com
+  institution_url: https://www.bitget.com
+  institution_color: "#00F0FF"
+
+requires_update:
+  family: dylan_family
+  name: Stale Bitget
+  api_key: old_bitget_key
+  api_secret: old_bitget_secret
+  passphrase: old_bitget_passphrase
+  status: requires_update
+  institution_name: Bitget

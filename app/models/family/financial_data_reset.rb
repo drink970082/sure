@@ -41,6 +41,7 @@ class Family::FinancialDataReset
   STATUS_COUNT_KEYS = (COUNT_KEYS - %i[syncs]) + %i[plaid_items]
   PROVIDER_ITEM_ASSOCIATIONS = %i[
     binance_items
+    bitget_items
     brex_items
     coinbase_items
     coinstats_items

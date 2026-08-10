@@ -1,0 +1,109 @@
+---
+zh-TW:
+  bitget_items:
+    provider_connection:
+      default_name: Bitget
+      default_description: 連結 Bitget 交易所帳戶
+      name: "Bitget - %{name}"
+      description: "連結至 %{name}"
+    create:
+      default_name: Bitget
+      success: 已成功連接 Bitget，正在同步你的交易所帳戶。
+    update:
+      success: 已更新 Bitget 連線。
+    destroy:
+      success: 已排定刪除 Bitget 連線。
+    select_accounts:
+      select_connection: 請在供應商設定中選擇一個 Bitget 連線。
+      no_credentials_configured: 請先新增 Bitget API 憑證再設定帳戶。
+    link_accounts:
+      select_connection: 請先選擇 Bitget 連線再連結帳戶。
+    select_existing_account:
+      title: 連結 Bitget 帳戶
+      no_accounts_found: 找不到 Bitget 帳戶。
+      wait_for_sync: 請等待 Bitget 同步完成。
+      check_provider_health: 請確認 Bitget API 憑證是否有效。
+      link: 連結
+      cancel: 取消
+    link_existing_account:
+      success: 已成功連結至 Bitget 帳戶
+      select_connection: 請先選擇 Bitget 連線再連結帳戶。
+      errors:
+        only_manual: 只有尚未連結供應商的手動加密貨幣交易所帳戶才能連結至 Bitget
+        invalid_bitget_account: 無效的 Bitget 帳戶
+        bitget_account_already_linked: 此 Bitget 帳戶已經連結過了
+    setup_accounts:
+      title: 匯入 Bitget 帳戶
+      subtitle: 選擇要追蹤的交易所帳戶
+      instructions: Bitget 會為此連線匯入一個合併的加密貨幣交易所帳戶，涵蓋現貨持倉、現貨成交明細，以及最近 90 天的資金流水。
+      no_accounts: 所有 Bitget 帳戶都已匯入。
+      accounts_count:
+        other: "有 %{count} 個帳戶可用"
+      select_all: 全選
+      import_selected: 匯入所選
+      cancel: 取消
+      creating: 匯入中...
+    complete_account_setup:
+      success:
+        other: "已匯入 %{count} 個帳戶"
+      none_selected: 未選擇任何帳戶
+      no_accounts: 沒有可匯入的帳戶
+    bitget_item:
+      provider_name: Bitget
+      syncing: 同步中...
+      reconnect: 憑證需要更新
+      deletion_in_progress: 刪除中...
+      sync_status:
+        no_accounts: 找不到帳戶
+        all_synced:
+          other: "已同步 %{count} 個帳戶"
+        partial_sync: "已同步 %{linked_count} 個，%{unlinked_count} 個待設定"
+      status: "上次同步於 %{timestamp}前"
+      status_with_summary: "上次同步於 %{timestamp}前 - %{summary}"
+      status_never: 從未同步
+      delete: 刪除
+      no_accounts_title: 找不到帳戶
+      no_accounts_message: 同步完成後，你的 Bitget 交易所帳戶會顯示在這裡。
+      setup_needed: 帳戶已可匯入
+      setup_description: 將此 Bitget 連線匯入為加密貨幣交易所帳戶。
+      setup_action: 匯入帳戶
+      import_accounts_menu: 匯入帳戶
+      stale_rate_warning: "餘額為約略值，因為無法取得 %{date} 的準確匯率。下次同步時會更新。"
+  bitget_item:
+    syncer:
+      checking_credentials: 檢查憑證中...
+      credentials_invalid: Bitget API 憑證無效，請檢查你的 API Key、Secret Key 與 Passphrase。
+      importing_accounts: 正在從 Bitget 匯入帳戶...
+      checking_configuration: 檢查帳戶設定中...
+      accounts_need_setup:
+        other: "有 %{count} 個帳戶需要設定"
+      processing_accounts: 處理帳戶資料中...
+      calculating_balances: 計算餘額中...
+  settings:
+    providers:
+      bitget_panel:
+        step1_html: '前往 <a href="https://www.bitget.com/account/newapi" target="_blank" rel="noopener noreferrer" class="underline">Bitget API 管理頁面</a>'
+        step2: "建立一把唯讀 (read-only) 權限的 API key，不要開啟交易或提幣權限。"
+        step3: "Passphrase 只在建立金鑰時顯示一次，請當下就複製起來。"
+        step4: "將 API Key、Secret Key 與 Passphrase 貼到下方。"
+        read_only_title: "僅供唯讀同步"
+        read_only_body: "請勿授予交易、劃轉或提幣權限。Sure 只會匯入餘額、持倉、現貨成交明細與資金流水。建議另外為這把金鑰設定 IP 白名單。"
+        default_connection_name: Bitget
+        add_connection: 新增 Bitget 連線
+        update_connection: 更新連線
+        connection_name_label: 連線名稱
+        connection_name_placeholder: 主要 Bitget
+        api_key_label: API Key
+        api_key_placeholder: 貼上你的 Bitget API Key
+        keep_api_key_placeholder: 留空則沿用現有的 API Key
+        api_secret_label: Secret Key
+        api_secret_placeholder: 貼上你的 Bitget Secret Key
+        keep_api_secret_placeholder: 留空則沿用現有的 Secret Key
+        passphrase_label: Passphrase
+        passphrase_placeholder: 貼上你建立金鑰時設定的 Passphrase
+        keep_passphrase_placeholder: 留空則沿用現有的 Passphrase
+        setup_accounts: 設定帳戶
+        syncing: 同步中...
+        sync: 同步
+        disconnect: 中斷連線
+        disconnect_confirm: "確定要中斷 %{name} 的連線嗎？"

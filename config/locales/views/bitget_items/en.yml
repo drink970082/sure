@@ -1,0 +1,116 @@
+---
+en:
+  bitget_items:
+    provider_connection:
+      default_name: Bitget
+      default_description: Link to a Bitget exchange account
+      name: "Bitget - %{name}"
+      description: "Link to %{name}"
+    create:
+      default_name: Bitget
+      success: Successfully connected to Bitget. Your exchange account is being synced.
+    update:
+      success: Successfully updated Bitget connection.
+    destroy:
+      success: Scheduled Bitget connection for deletion.
+    select_accounts:
+      select_connection: Choose a Bitget connection in Provider Settings.
+      no_credentials_configured: Add Bitget API credentials before setting up accounts.
+    link_accounts:
+      select_connection: Choose a Bitget connection before linking accounts.
+    select_existing_account:
+      title: Link Bitget Account
+      no_accounts_found: No Bitget accounts found.
+      wait_for_sync: Wait for Bitget to finish syncing.
+      check_provider_health: Check that your Bitget API credentials are valid.
+      link: Link
+      cancel: Cancel
+    link_existing_account:
+      success: Successfully linked to Bitget account
+      select_connection: Choose a Bitget connection before linking accounts.
+      errors:
+        only_manual: Only manual Crypto exchange accounts without an existing provider link can be linked to Bitget
+        invalid_bitget_account: Invalid Bitget account
+        bitget_account_already_linked: This Bitget account is already linked
+    setup_accounts:
+      title: Import Bitget Account
+      subtitle: Select the exchange account to track
+      instructions: Bitget imports one combined Crypto exchange account for this connection, covering spot holdings, spot fills, and the last 90 days of financial records.
+      no_accounts: All Bitget accounts have been imported.
+      accounts_count:
+        one: "%{count} account available"
+        other: "%{count} accounts available"
+      select_all: Select all
+      import_selected: Import Selected
+      cancel: Cancel
+      creating: Importing...
+    complete_account_setup:
+      success:
+        one: "Imported %{count} account"
+        other: "Imported %{count} accounts"
+      none_selected: No accounts selected
+      no_accounts: No accounts to import
+    bitget_item:
+      provider_name: Bitget
+      syncing: Syncing...
+      reconnect: Credentials need updating
+      deletion_in_progress: Deleting...
+      sync_status:
+        no_accounts: No accounts found
+        all_synced:
+          one: "%{count} account synced"
+          other: "%{count} accounts synced"
+        partial_sync: "%{linked_count} synced, %{unlinked_count} need setup"
+      status: "Last synced %{timestamp} ago"
+      status_with_summary: "Last synced %{timestamp} ago - %{summary}"
+      status_never: Never synced
+      delete: Delete
+      no_accounts_title: No accounts found
+      no_accounts_message: Your Bitget exchange account will appear here after syncing.
+      setup_needed: Account ready to import
+      setup_description: Import this Bitget connection as a Crypto exchange account.
+      setup_action: Import Account
+      import_accounts_menu: Import Account
+      stale_rate_warning: "Balance is approximate because the exact exchange rate for %{date} was unavailable. Will update on next sync."
+  bitget_item:
+    syncer:
+      checking_credentials: Checking credentials...
+      credentials_invalid: Invalid Bitget API credentials. Please check your API key, secret, and passphrase.
+      importing_accounts: Importing accounts from Bitget...
+      checking_configuration: Checking account configuration...
+      accounts_need_setup:
+        one: "%{count} account needs setup"
+        other: "%{count} accounts need setup"
+      processing_accounts: Processing account data...
+      calculating_balances: Calculating balances...
+  # Nested under settings on purpose: Rails deep-merges locale files, so the
+  # Bitget panel strings can live in this fork-only file instead of editing
+  # config/locales/views/settings/en.yml, which upstream also edits.
+  settings:
+    providers:
+      bitget_panel:
+        step1_html: 'Go to <a href="https://www.bitget.com/account/newapi" target="_blank" rel="noopener noreferrer" class="underline">Bitget API management</a>'
+        step2: "Create an API key with read-only permissions. Do not enable trade or withdrawal."
+        step3: "Bitget shows the passphrase only once when the key is created - copy it now."
+        step4: "Paste the API key, secret key, and passphrase below."
+        read_only_title: "Read-only exchange sync only"
+        read_only_body: "Do not grant trading, transfer, or withdrawal permissions. Sure only imports balances, holdings, spot fills, and financial records. Adding an IP allowlist on the key is recommended."
+        default_connection_name: Bitget
+        add_connection: Add Bitget connection
+        update_connection: Update connection
+        connection_name_label: Connection name
+        connection_name_placeholder: Main Bitget
+        api_key_label: API Key
+        api_key_placeholder: Paste your Bitget API key
+        keep_api_key_placeholder: Leave blank to keep the existing API key
+        api_secret_label: Secret Key
+        api_secret_placeholder: Paste your Bitget secret key
+        keep_api_secret_placeholder: Leave blank to keep the existing secret key
+        passphrase_label: Passphrase
+        passphrase_placeholder: Paste the passphrase you set when creating the key
+        keep_passphrase_placeholder: Leave blank to keep the existing passphrase
+        setup_accounts: Setup account
+        syncing: Syncing...
+        sync: Sync
+        disconnect: Disconnect
+        disconnect_confirm: "Are you sure you want to disconnect %{name}?"

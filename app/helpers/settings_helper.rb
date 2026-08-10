@@ -93,6 +93,9 @@ module SettingsHelper
     when "kraken"
       return { status: :off } unless @kraken_items&.any?
       sync_based_summary(key)
+    when "bitget"
+      return { status: :off } unless @bitget_items&.any?
+      sync_based_summary(key)
     when "snaptrade"
       configured_item = @snaptrade_items&.find(&:oauth_configured?)
       return { status: :off } unless configured_item
