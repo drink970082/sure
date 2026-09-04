@@ -96,6 +96,9 @@ module SettingsHelper
     when "bitget"
       return { status: :off } unless @bitget_items&.any?
       sync_based_summary(key)
+    when "onchain_wallet"
+      return { status: :off } unless @onchain_wallet_items&.any?
+      sync_based_summary(key)
     when "snaptrade"
       configured_item = @snaptrade_items&.find(&:oauth_configured?)
       return { status: :off } unless configured_item
@@ -103,6 +106,9 @@ module SettingsHelper
       sync_based_summary(key)
     when "ibkr"
       return { status: :off } unless @ibkr_items&.any?
+      sync_based_summary(key)
+    when "trade_republic"
+      return { status: :off } unless @trade_republic_items&.any?
       sync_based_summary(key)
     when "indexa_capital"
       return { status: :off } unless @indexa_capital_items&.any?
