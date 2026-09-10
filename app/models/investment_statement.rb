@@ -73,16 +73,47 @@ class InvestmentStatement
       account_ids = investment_account_ids
 
       if account_ids.any?
-        # Get the latest holding for each security per account
+        # Provider price dates can differ within one import (for example,
+        # Plaid's institution_price_as_of is per security). Use the day each
+        # holding was imported to identify the latest provider snapshot while
+        # preserving each security's provider-supplied price date.
+        provider_snapshot = <<~SQL.squish
+          holdings.account_provider_id IS NOT NULL
+          AND holdings.updated_at::date = (
+            SELECT MAX(provider_holdings.updated_at::date)
+            FROM holdings provider_holdings
+            WHERE provider_holdings.account_id = holdings.account_id
+              AND provider_holdings.account_provider_id IS NOT NULL
+          )
+        SQL
+
+        manual_snapshot = <<~SQL.squish
+          NOT EXISTS (
+            SELECT 1
+            FROM holdings provider_holdings
+            WHERE provider_holdings.account_id = holdings.account_id
+              AND provider_holdings.account_provider_id IS NOT NULL
+          )
+          AND holdings.currency = (
+            SELECT accounts.currency
+            FROM accounts
+            WHERE accounts.id = holdings.account_id
+          )
+          AND holdings.id = (
+            SELECT latest_holdings.id
+            FROM holdings latest_holdings
+            WHERE latest_holdings.account_id = holdings.account_id
+              AND latest_holdings.security_id = holdings.security_id
+              AND latest_holdings.currency = holdings.currency
+            ORDER BY latest_holdings.date DESC
+            LIMIT 1
+          )
+        SQL
+
         Holding
           .where(account_id: account_ids)
           .where.not(qty: 0)
-          .where(
-            id: Holding
-              .where(account_id: account_ids)
-              .select("DISTINCT ON (holdings.account_id, holdings.security_id) holdings.id")
-              .order(Arel.sql("holdings.account_id, holdings.security_id, holdings.date DESC"))
-          )
+          .where(Arel.sql("(#{provider_snapshot}) OR (#{manual_snapshot})"))
           .includes(:security, :account)
       else
         Holding.none
