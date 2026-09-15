@@ -155,7 +155,190 @@ class PlaidAccount::Investments::HoldingsProcessorTest < ActiveSupport::TestCase
     assert account.holdings.exists?(security: securities(:aapl), date: 1.day.ago.to_date, qty: 100)
   end
 
+  test "marks all holdings from one Plaid response as the current snapshot" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    stale = account.holdings.create!(
+      security: securities(:msft),
+      date: Date.current,
+      qty: 1,
+      price: 100,
+      amount: 100,
+      currency: "USD",
+      account_provider: account_provider
+    )
+    @plaid_account.update!(raw_holdings_payload: {
+      "holdings" => [
+        {
+          "security_id" => "current",
+          "quantity" => 2,
+          "institution_price" => 150,
+          "iso_currency_code" => "USD",
+          "institution_price_as_of" => 1.day.ago.to_date
+        }
+      ]
+    })
+    @security_resolver.expects(:resolve)
+                      .with(plaid_security_id: "current")
+                      .returns(OpenStruct.new(security: securities(:aapl)))
+
+    described_processor.process
+
+    current = account.holdings.find_by!(security: securities(:aapl), qty: 2)
+    assert_equal account_provider.reload.current_holding_snapshot_id, current.provider_snapshot_id
+    assert_not_equal current.provider_snapshot_id, stale.provider_snapshot_id
+    assert_equal [ current.id ], account.current_holdings.pluck(:id)
+  end
+
+  test "an empty Plaid response advances to an empty current snapshot" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    account.holdings.create!(
+      security: securities(:aapl),
+      date: Date.current,
+      qty: 1,
+      price: 100,
+      amount: 100,
+      currency: "USD",
+      account_provider: account_provider
+    )
+    @plaid_account.update!(raw_holdings_payload: { "holdings" => [] })
+
+    described_processor.process
+
+    assert account_provider.reload.current_holding_snapshot_id.present?
+    assert_empty account.current_holdings
+  end
+
+  test "a missing Plaid response preserves the current snapshot" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    snapshot_id = SecureRandom.uuid
+    account_provider.update!(current_holding_snapshot_id: snapshot_id)
+    @plaid_account.update!(raw_holdings_payload: nil)
+
+    described_processor.process
+
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+  end
+
+  test "brokerage cash does not prevent a completed snapshot" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    @plaid_account.update!(raw_holdings_payload: {
+      "holdings" => [ { "security_id" => "cash", "quantity" => 100, "institution_price" => 1 } ]
+    })
+    @security_resolver.expects(:resolve)
+                      .with(plaid_security_id: "cash")
+                      .returns(OpenStruct.new(security: nil, brokerage_cash?: true))
+
+    described_processor.process
+
+    assert account_provider.reload.current_holding_snapshot_id.present?
+    assert_empty account.current_holdings
+  end
+
+  test "an incomplete response does not modify an existing current snapshot" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    snapshot_id = SecureRandom.uuid
+    current = account.holdings.create!(
+      security: securities(:aapl),
+      date: Date.current,
+      qty: 1,
+      price: 100,
+      amount: 100,
+      currency: "USD",
+      account_provider: account_provider,
+      provider_snapshot_id: snapshot_id
+    )
+    account_provider.update!(current_holding_snapshot_id: snapshot_id)
+    @plaid_account.update!(raw_holdings_payload: {
+      "holdings" => [
+        { "security_id" => "valid", "quantity" => 2, "institution_price" => 150 },
+        { "security_id" => "invalid", "quantity" => 1, "institution_price" => 100 }
+      ]
+    })
+    @security_resolver.expects(:resolve)
+                      .with(plaid_security_id: "valid")
+                      .returns(OpenStruct.new(security: securities(:aapl), brokerage_cash?: false))
+    @security_resolver.expects(:resolve)
+                      .with(plaid_security_id: "invalid")
+                      .returns(OpenStruct.new(security: nil, brokerage_cash?: false))
+
+    described_processor.process
+
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_equal 1, current.reload.qty
+    assert_equal 100, current.amount
+  end
+
+  test "a second sync on the same day removes a position missing from the response" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    initial_rows = [
+      { "security_id" => "aapl", "quantity" => 2, "institution_price" => 150 },
+      { "security_id" => "msft", "quantity" => 1, "institution_price" => 100 }
+    ]
+    @security_resolver.stubs(:resolve).with(plaid_security_id: "aapl").returns(OpenStruct.new(security: securities(:aapl)))
+    @security_resolver.stubs(:resolve).with(plaid_security_id: "msft").returns(OpenStruct.new(security: securities(:msft)))
+    @plaid_account.update!(raw_holdings_payload: { "holdings" => initial_rows })
+    described_processor.process
+    first_snapshot_id = account_provider.reload.current_holding_snapshot_id
+
+    @plaid_account.update!(raw_holdings_payload: { "holdings" => [ initial_rows.first.merge("quantity" => 3) ] })
+    described_processor.process
+
+    assert_not_equal first_snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_equal [ securities(:aapl).id ], account.current_holdings.pluck(:security_id)
+    assert_equal [ 3.to_d ], account.current_holdings.pluck(:qty)
+    assert account.holdings.exists?(security: securities(:msft)), "Historical positions must not be deleted"
+    assert_equal account.current_holdings.pluck(:id),
+                 Holding::CurrentForInvestmentAccounts.new([ account.id ]).relation.pluck(:id)
+  end
+
+  test "a failed holding write rolls back earlier rows and preserves the current snapshot" do
+    account = @plaid_account.current_account
+    account_provider = AccountProvider.create!(account: account, provider: @plaid_account)
+    @security_resolver.stubs(:resolve).with(plaid_security_id: "aapl").returns(OpenStruct.new(security: securities(:aapl)))
+    @security_resolver.stubs(:resolve).with(plaid_security_id: "msft").returns(OpenStruct.new(security: securities(:msft)))
+    @plaid_account.update!(raw_holdings_payload: {
+      "holdings" => [ { "security_id" => "aapl", "quantity" => 1, "institution_price" => 150 } ]
+    })
+    described_processor.process
+    snapshot_id = account_provider.reload.current_holding_snapshot_id
+    current = account.current_holdings.sole
+
+    @plaid_account.update!(raw_holdings_payload: {
+      "holdings" => [
+        { "security_id" => "aapl", "quantity" => 3, "institution_price" => 150 },
+        { "security_id" => "msft", "quantity" => -1, "institution_price" => 100 }
+      ]
+    })
+
+    assert_raises ActiveRecord::RecordInvalid do
+      described_processor.process
+    end
+
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_equal 1, current.reload.qty
+    assert_equal [ current.id ], account.current_holdings.pluck(:id)
+  end
+
+  test "a malformed holdings payload is not treated as a complete empty response" do
+    account_provider = AccountProvider.create!(account: @plaid_account.current_account, provider: @plaid_account)
+    snapshot_id = SecureRandom.uuid
+    account_provider.update!(current_holding_snapshot_id: snapshot_id)
+
+    [ {}, { "holdings" => nil }, { "holdings" => {} } ].each do |payload|
+      @plaid_account.update!(raw_holdings_payload: payload)
+      described_processor.process
+      assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+    end
+  end
+
   test "continues processing other holdings when security resolution fails" do
+    account_provider = AccountProvider.create!(account: @plaid_account.current_account, provider: @plaid_account)
     test_investments_payload = {
       securities: [],
       holdings: [
@@ -196,6 +379,7 @@ class PlaidAccount::Investments::HoldingsProcessorTest < ActiveSupport::TestCase
 
     # Should have created the successful holding
     assert @plaid_account.current_account.holdings.exists?(security: securities(:aapl), qty: 200)
+    assert_nil account_provider.reload.current_holding_snapshot_id
   end
 
   test "handles string values and computes amount using BigDecimal arithmetic" do
@@ -325,4 +509,9 @@ class PlaidAccount::Investments::HoldingsProcessorTest < ActiveSupport::TestCase
     holding = account.holdings.find_by(security: securities(:aapl))
     assert_equal "EUR", holding.currency  # Should use account's currency
   end
+
+  private
+    def described_processor
+      PlaidAccount::Investments::HoldingsProcessor.new(@plaid_account, security_resolver: @security_resolver)
+    end
 end

@@ -590,7 +590,9 @@ class Account < ApplicationRecord
   end
 
   def current_holdings
-    if (provider_snapshot_date = latest_provider_holdings_snapshot_date)
+    if account_providers.where.not(current_holding_snapshot_id: nil).exists?
+      Holding::CurrentForInvestmentAccounts.new([ id ]).relation.order(amount: :desc)
+    elsif (provider_snapshot_date = latest_provider_holdings_snapshot_date)
       holdings
         .where.not(account_provider_id: nil)
         .where(date: provider_snapshot_date)

@@ -404,6 +404,196 @@ class Account::ProviderImportAdapterTest < ActiveSupport::TestCase
     assert_equal account_provider.id, holding.account_provider_id
   end
 
+  test "records a completed provider holding import" do
+    investment_account = accounts(:investment)
+    adapter = Account::ProviderImportAdapter.new(investment_account)
+    account_provider = AccountProvider.create!(
+      account: investment_account,
+      provider: plaid_accounts(:one)
+    )
+
+    imported_holding = nil
+    snapshot_id = adapter.import_holding_snapshot(account_provider: account_provider) do
+      imported_holding = adapter.import_holding(
+        security: securities(:aapl),
+        quantity: 10,
+        amount: 1500,
+        currency: "USD",
+        date: Date.current,
+        price: 150,
+        source: "plaid",
+        account_provider_id: account_provider.id
+      )
+    end
+
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_equal snapshot_id, imported_holding.provider_snapshot_id
+  end
+
+  test "records an empty provider holding import" do
+    investment_account = accounts(:investment)
+    adapter = Account::ProviderImportAdapter.new(investment_account)
+    account_provider = AccountProvider.create!(
+      account: investment_account,
+      provider: plaid_accounts(:one)
+    )
+
+    snapshot_id = adapter.import_holding_snapshot(account_provider: account_provider) { }
+
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_empty investment_account.holdings.where(provider_snapshot_id: snapshot_id)
+  end
+
+  test "rolls back a provider holding import when the batch fails" do
+    investment_account = accounts(:investment)
+    adapter = Account::ProviderImportAdapter.new(investment_account)
+    account_provider = AccountProvider.create!(
+      account: investment_account,
+      provider: plaid_accounts(:one)
+    )
+
+    prior_snapshot_id = SecureRandom.uuid
+    account_provider.update!(current_holding_snapshot_id: prior_snapshot_id)
+
+    assert_raises RuntimeError do
+      adapter.import_holding_snapshot(account_provider: account_provider) do
+        adapter.import_holding(
+          security: securities(:aapl),
+          quantity: 10,
+          amount: 1500,
+          currency: "USD",
+          date: Date.current,
+          price: 150,
+          source: "plaid",
+          account_provider_id: account_provider.id
+        )
+        raise "failed batch"
+      end
+    end
+
+    assert_equal prior_snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_empty investment_account.holdings.where(account_provider: account_provider)
+  end
+
+  test "rejects holdings owned by another provider during a snapshot" do
+    investment_account = accounts(:investment)
+    adapter = Account::ProviderImportAdapter.new(investment_account)
+    account_provider = AccountProvider.create!(account: investment_account, provider: plaid_accounts(:one))
+
+    assert_raises ArgumentError do
+      adapter.import_holding_snapshot(account_provider: account_provider) do
+        adapter.import_holding(
+          security: securities(:aapl),
+          quantity: 10,
+          amount: 1500,
+          currency: "USD",
+          date: Date.current,
+          price: 150,
+          source: "plaid",
+          account_provider_id: SecureRandom.uuid
+        )
+      end
+    end
+
+    assert_nil account_provider.reload.current_holding_snapshot_id
+  end
+
+  test "rejects a snapshot that collides with another provider holding" do
+    investment_account = accounts(:investment)
+    adapter = Account::ProviderImportAdapter.new(investment_account)
+    account_provider = AccountProvider.create!(account: investment_account, provider: plaid_accounts(:one))
+    coinbase_item = CoinbaseItem.create!(family: investment_account.family, name: "Coinbase", api_key: "key", api_secret: "secret")
+    coinbase_account = coinbase_item.coinbase_accounts.create!(name: "Brokerage", currency: "USD")
+    other_provider = AccountProvider.create!(account: investment_account, provider: coinbase_account)
+    security = Security.create!(ticker: "SNAPSHOT-COLLISION", name: "Snapshot collision")
+    existing = investment_account.holdings.create!(
+      security: security,
+      qty: 10,
+      amount: 1500,
+      currency: "USD",
+      date: Date.current,
+      price: 150,
+      account_provider: other_provider
+    )
+
+    assert_raises ActiveRecord::RecordNotUnique do
+      adapter.import_holding_snapshot(account_provider: account_provider) do
+        adapter.import_holding(
+          security: security,
+          quantity: 5,
+          amount: 750,
+          currency: "USD",
+          date: Date.current,
+          price: 150,
+          source: "plaid",
+          account_provider_id: account_provider.id
+        )
+      end
+    end
+
+    assert_equal other_provider, existing.reload.account_provider
+    assert_equal 10, existing.qty
+    assert_nil existing.provider_snapshot_id
+    assert_nil account_provider.reload.current_holding_snapshot_id
+  end
+
+  test "resets snapshot context after failure so the adapter can import again" do
+    account_provider = AccountProvider.create!(account: @account, provider: plaid_accounts(:one))
+
+    assert_raises RuntimeError do
+      @adapter.import_holding_snapshot(account_provider: account_provider) { raise "failed import" }
+    end
+
+    snapshot_id = @adapter.import_holding_snapshot(account_provider: account_provider) { }
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+  end
+
+  test "does not publish a snapshot when unique-key recovery cannot persist its holding" do
+    account_provider = AccountProvider.create!(account: @account, provider: plaid_accounts(:one))
+    snapshot_id = SecureRandom.uuid
+    account_provider.update!(current_holding_snapshot_id: snapshot_id)
+    holding = @account.holdings.create!(
+      security: securities(:aapl), qty: 1, price: 100, amount: 100,
+      currency: "USD", date: Date.current, account_provider: account_provider,
+      provider_snapshot_id: snapshot_id
+    )
+    Holding.any_instance.expects(:save!).raises(ActiveRecord::RecordNotUnique)
+    Holding.any_instance.expects(:update_columns).returns(false)
+
+    assert_raises ActiveRecord::RecordNotSaved do
+      @adapter.import_holding_snapshot(account_provider: account_provider) do
+        @adapter.import_holding(
+          security: securities(:aapl), quantity: 2, amount: 200, price: 100,
+          currency: "USD", date: Date.current, source: "plaid",
+          account_provider_id: account_provider.id
+        )
+      end
+    end
+
+    assert_equal snapshot_id, account_provider.reload.current_holding_snapshot_id
+    assert_equal 1, holding.reload.qty
+  end
+
+  test "rejects a snapshot for an account provider belonging to another account" do
+    other_provider = AccountProvider.create!(account: accounts(:investment), provider: plaid_accounts(:one))
+
+    assert_raises ArgumentError do
+      @adapter.import_holding_snapshot(account_provider: other_provider) { flunk "must not import" }
+    end
+    assert_nil other_provider.reload.current_holding_snapshot_id
+  end
+
+  test "rejects nested snapshots without publishing either batch" do
+    account_provider = AccountProvider.create!(account: @account, provider: plaid_accounts(:one))
+
+    assert_raises ArgumentError do
+      @adapter.import_holding_snapshot(account_provider: account_provider) do
+        @adapter.import_holding_snapshot(account_provider: account_provider) { }
+      end
+    end
+    assert_nil account_provider.reload.current_holding_snapshot_id
+  end
+
   test "does not delete future holdings when can_delete_holdings? returns false" do
     investment_account = accounts(:investment)
     adapter = Account::ProviderImportAdapter.new(investment_account)

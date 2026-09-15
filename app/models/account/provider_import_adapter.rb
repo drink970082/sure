@@ -22,6 +22,26 @@ class Account::ProviderImportAdapter
     @skipped_entries = []
   end
 
+  # Publish a complete provider response atomically, including an empty one.
+  # Serialize snapshots for an account because imports can update the same rows.
+  # A failed write rolls back both the holdings and the current snapshot pointer.
+  def import_holding_snapshot(account_provider:)
+    raise ArgumentError, "account_provider is required" if account_provider.nil?
+    raise ArgumentError, "account_provider must belong to account" unless account_provider.persisted? && account_provider.account_id == account.id
+    raise ArgumentError, "nested holding snapshots are not supported" if @provider_snapshot_id
+
+    account.with_lock do
+      @provider_snapshot_id = SecureRandom.uuid
+      @provider_snapshot_account_provider_id = account_provider.id
+      yield
+      account_provider.update!(current_holding_snapshot_id: @provider_snapshot_id)
+      @provider_snapshot_id
+    ensure
+      @provider_snapshot_id = nil
+      @provider_snapshot_account_provider_id = nil
+    end
+  end
+
   # Imports a transaction from a provider
   #
   # @param external_id [String] Unique identifier from the provider (e.g., "plaid_12345", "simplefin_abc")
@@ -432,6 +452,9 @@ class Account::ProviderImportAdapter
   def import_holding(security:, quantity:, amount:, currency:, date:, price: nil, cost_basis: nil, external_id: nil, source:, account_provider_id: nil, delete_future_holdings: false)
     raise ArgumentError, "security is required" if security.nil?
     raise ArgumentError, "source is required" if source.blank?
+    if @provider_snapshot_id && @provider_snapshot_account_provider_id != account_provider_id
+      raise ArgumentError, "holding must belong to the active provider holding import"
+    end
 
     Account.transaction do
       # Two strategies for finding/creating holdings:
@@ -502,7 +525,7 @@ class Account::ProviderImportAdapter
 
       # Early cross-provider composite-key conflict guard: avoid attempting a write
       # that would violate a unique index on (account_id, security_id, date, currency).
-      if external_id.present?
+      if external_id.present? || @provider_snapshot_id
         existing_composite = account.holdings.find_by(
           security: security,
           date: date,
@@ -516,8 +539,16 @@ class Account::ProviderImportAdapter
           Rails.logger.warn(
             "ProviderImportAdapter: cross-provider holding collision for account=#{account.id} security=#{security.id} date=#{date} currency=#{currency}; returning existing id=#{existing_composite.id}"
           )
+          if @provider_snapshot_id
+            raise ActiveRecord::RecordNotUnique, "provider holding snapshot collided with another provider"
+          end
+
           return existing_composite
         end
+      end
+
+      if @provider_snapshot_id && holding.account_provider_id.present? && holding.account_provider_id != account_provider_id
+        raise ArgumentError, "holding is already owned by another provider"
       end
 
       # Reconcile cost_basis to respect priority hierarchy
@@ -537,6 +568,8 @@ class Account::ProviderImportAdapter
         account_provider_id: account_provider_id,
         external_id: external_id
       }
+
+      attributes[:provider_snapshot_id] = @provider_snapshot_id if @provider_snapshot_id
 
       # Only update security if not locked by user
       if holding.new_record? || holding.security_replaceable_by_provider?
@@ -576,6 +609,10 @@ class Account::ProviderImportAdapter
             Rails.logger.warn(
               "ProviderImportAdapter: cross-provider holding collision for account=#{account.id} security=#{security.id} date=#{date} currency=#{currency}; returning existing id=#{existing.id}"
             )
+            if @provider_snapshot_id
+              raise ActiveRecord::RecordNotUnique, "provider holding snapshot collided with another provider"
+            end
+
             holding = existing
           else
             # Same provider (or unowned). Apply latest snapshot and attach external_id for idempotency.
@@ -584,6 +621,8 @@ class Account::ProviderImportAdapter
               price: price,
               amount: amount
             }
+
+            updates[:provider_snapshot_id] = @provider_snapshot_id if @provider_snapshot_id
 
             # Reconcile cost_basis to respect priority hierarchy
             collision_reconciled = Holding::CostBasisReconciler.reconcile(
@@ -609,8 +648,13 @@ class Account::ProviderImportAdapter
 
             begin
               # Use update_columns to avoid validations and keep this collision handler best-effort.
-              existing.update_columns(updates.compact)
-            rescue => _
+              updated = existing.update_columns(updates.compact)
+              if @provider_snapshot_id && !updated
+                raise ActiveRecord::RecordNotSaved, "provider holding snapshot could not update an existing holding"
+              end
+            rescue => collision_error
+              raise collision_error if @provider_snapshot_id
+
               # Best-effort only; avoid raising in collision handler
             end
 

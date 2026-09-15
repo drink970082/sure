@@ -35,6 +35,25 @@ so operators can inspect it in the super-admin `/settings/debug` UI.
 - Reserve raw Rails logging for low-value local noise; incidents operators need
   to investigate belong in the debug log.
 
+## Provider holding snapshots
+
+`Account::ProviderImportAdapter#import_holding_snapshot(account_provider:)`
+publishes a complete holdings response in one transaction under the account lock.
+Call `import_holding` inside its block with that provider's `account_provider_id`.
+The imported rows receive one `provider_snapshot_id`; only after every write
+succeeds does `AccountProvider#current_holding_snapshot_id` advance. An empty
+response publishes an empty portfolio without deleting historical holdings.
+
+Plaid investments use this contract. Missing payloads and incomplete responses
+must not replace a completed snapshot. Brokerage cash is deliberately excluded
+because it is stored as the account's cash balance. Providers that have not adopted
+the contract retain the import-day fallback in investment reports. Snapshot IDs
+identify current membership, not an immutable archive of every intraday import.
+
+The existing holding uniqueness constraint still applies across providers. If
+another provider owns the same account/security/date/currency row, a snapshot
+import fails atomically instead of claiming the row or publishing a partial batch.
+
 ## Pending transactions and FX metadata
 
 Store provider metadata on `Transaction#extra` under the provider namespace.

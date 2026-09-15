@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_29_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_02_002900) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -24,6 +24,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_29_120000) do
   create_table "account_providers", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "account_id", null: false
     t.datetime "created_at", null: false
+    t.uuid "current_holding_snapshot_id"
     t.uuid "provider_id", null: false
     t.string "provider_type", null: false
     t.datetime "updated_at", null: false
@@ -1185,6 +1186,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_29_120000) do
     t.string "external_id"
     t.decimal "price", precision: 19, scale: 4, null: false
     t.uuid "provider_security_id"
+    t.uuid "provider_snapshot_id"
     t.decimal "qty", precision: 34, scale: 18, null: false
     t.uuid "security_id", null: false
     t.boolean "security_locked", default: false, null: false
@@ -1192,6 +1194,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_29_120000) do
     t.index ["account_id", "external_id"], name: "idx_holdings_on_account_id_external_id_unique", unique: true, where: "(external_id IS NOT NULL)"
     t.index ["account_id", "security_id", "date", "currency"], name: "idx_on_account_id_security_id_date_currency_5323e39f8b", unique: true
     t.index ["account_id"], name: "index_holdings_on_account_id"
+    t.index ["account_provider_id", "provider_snapshot_id"], name: "idx_holdings_on_provider_and_snapshot"
     t.index ["account_provider_id"], name: "index_holdings_on_account_provider_id"
     t.index ["provider_security_id"], name: "index_holdings_on_provider_security_id"
     t.index ["security_id"], name: "index_holdings_on_security_id"
