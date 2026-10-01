@@ -1,4 +1,12 @@
 module BillsHelper
+  # A bill's next due date reads "Oct 5" when it falls this year and gains the
+  # year otherwise, so an every-2-years bill never shows "Sep 1" for a date
+  # that is years out. Same rule as Period#label. Payment dates are historical
+  # and always carry the year instead.
+  def bills_upcoming_date(date)
+    l(date, format: date.year == Date.current.year ? :short : :short_with_year)
+  end
+
   # One-shot AI features (smart-fill, smart-configure) need both the user's
   # consent AND a resolvable LLM provider -- an unconfigured self-hosted
   # install renders no AI affordances at all, following the Rules registry's
@@ -214,7 +222,7 @@ module BillsHelper
   # Which account the charge lands on. Worth showing only when it tells the rows
   # apart: on a single-account family it repeated the same name down every line,
   # which is nineteen copies of a fact carrying no information. The bill's
-  # expansion names the account regardless, so nothing is lost when it is quiet
+  # drawer names the account regardless, so nothing is lost when it is quiet
   # here.
   def bills_paid_from_label(bill)
     return "" if bill.account.blank?
@@ -244,7 +252,7 @@ module BillsHelper
   def occurrence_due_label(occurrence)
     due = occurrence.effective_due_on
     days = (due - Date.current).to_i
-    date = l(due, format: :short)
+    date = bills_upcoming_date(due)
 
     # A settled cycle is not late. This label only ever looked at dates, so a
     # bill paid three weeks after its due date reported "Overdue by 20 days"
